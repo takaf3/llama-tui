@@ -261,7 +261,7 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 			cancel()
 			return startErrorMsg{err: binErr}
 		}
-		cmd := exec.CommandContext(ctx, bin, "-m", selected.path, "--port", port)
+		cmd := exec.CommandContext(ctx, bin, "-m", selected.path, "--port", port, "--jinja")
 		cmdEnv := os.Environ()
 		cmd.Env = cmdEnv
 
@@ -308,7 +308,7 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 		default:
 		}
 		select {
-		case logChan <- fmt.Sprintf("Exec: %s -m %s --port %s", bin, selected.path, port):
+		case logChan <- fmt.Sprintf("Exec: %s -m %s --port %s --jinja", bin, selected.path, port):
 		default:
 		}
 		select {

@@ -82,7 +82,8 @@ $HOME/.llamabarn/llama-server-logs/YYYYMMDD_HHMMSS.log
 
 ## Notes
 
-- The TUI uses `-m <model>` and `--port <port>` when invoking `llama-server`.
+- The TUI uses `-m <model>`, `--port <port>`, and `--jinja` when invoking `llama-server`.
+- The `--jinja` flag is enabled by default to support OpenAI Tools/function calling. If your `llama-server` doesn't recognize `--jinja`, update to a newer `llama.cpp` build.
 - If your `llama-server` requires different flags, adapt `main.go` accordingly.
 - File logging applies from the next server start (not mid-run).
 
