@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -307,7 +308,7 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 		default:
 		}
 		select {
-		case logChan <- fmt.Sprintf("Exec: %s -m %s -p %s", bin, selected.path, port):
+		case logChan <- fmt.Sprintf("Exec: %s -m %s --port %s", bin, selected.path, port):
 		default:
 		}
 		select {
@@ -442,7 +443,7 @@ func (m appModel) waitForExit() tea.Cmd {
 
 func (m *appModel) stopServerCmd() tea.Cmd {
 	return func() tea.Msg {
-		if !m.serverRunning || m.serverCmd == nil {
+		if m.serverCmd == nil {
 			return stoppedMsg{}
 		}
 		// Attempt graceful stop
@@ -450,22 +451,18 @@ func (m *appModel) stopServerCmd() tea.Cmd {
 			m.serverCancel()
 		}
 		if m.serverCmd.Process != nil {
+			// Best-effort graceful signals
 			_ = m.serverCmd.Process.Signal(os.Interrupt)
-		}
-		// Fallback hard kill after timeout
-		done := make(chan struct{})
-		go func() {
-			if m.serverCmd != nil {
-				_, _ = m.serverCmd.Process.Wait()
-			}
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			if m.serverCmd != nil && m.serverCmd.Process != nil {
-				_ = m.serverCmd.Process.Kill()
-			}
+			_ = m.serverCmd.Process.Signal(syscall.SIGTERM)
+			// Escalate to SIGKILL after a short grace period, without blocking UI
+			go func(cmd *exec.Cmd) {
+				timer := time.NewTimer(2 * time.Second)
+				defer timer.Stop()
+				<-timer.C
+				if cmd != nil && cmd.Process != nil {
+					_ = cmd.Process.Kill()
+				}
+			}(m.serverCmd)
 		}
 		return stoppedMsg{}
 	}
@@ -618,7 +615,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "s":
-			if m.serverRunning {
+			if m.serverCmd != nil {
+				// Provide immediate user feedback
+				m.statusLineText = "Stopping server..."
+				m.logBufferMu.Lock()
+				_, _ = m.logBuffer.WriteString("\n[ui] Stopping server...\n")
+				m.logBufferMu.Unlock()
+				m.logsViewport.SetContent(m.logBuffer.String())
 				return m, m.stopServerCmd()
 			}
 			return m, nil
