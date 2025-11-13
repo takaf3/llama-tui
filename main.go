@@ -84,6 +84,10 @@ type appModel struct {
 	logsViewport   viewport.Model
 	statusLineText string
 
+	leftWidth      int
+	rightWidth     int
+	contentHeight  int
+
 	homeDir           string
 	barnDir           string
 	logsDir           string
@@ -103,26 +107,37 @@ type appModel struct {
 }
 
 type uiStyles struct {
-	title        lipgloss.Style
-	status       lipgloss.Style
-	sectionTitle lipgloss.Style
-	help         lipgloss.Style
-	accent       lipgloss.Style
-	border       lipgloss.Style
+	title         lipgloss.Style
+	status        lipgloss.Style
+	sectionTitle  lipgloss.Style
+	help          lipgloss.Style
+	accent        lipgloss.Style
+	border        lipgloss.Style
 	statusRunning lipgloss.Style
 	statusStopped lipgloss.Style
+	panelBorder   lipgloss.Style
+	panelTitle    lipgloss.Style
+	logError      lipgloss.Style
+	logWarn       lipgloss.Style
+	logInfo       lipgloss.Style
 }
 
 func newStyles() uiStyles {
+	// Catppuccin Mocha color palette
 	return uiStyles{
-		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")),
-		status:        lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
-		sectionTitle:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("141")),
-		help:          lipgloss.NewStyle().Foreground(lipgloss.Color("246")),
-		accent:        lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
+		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#b4befe")), // lavender
+		status:        lipgloss.NewStyle().Foreground(lipgloss.Color("#a6adc8")),            // subtext0
+		sectionTitle:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#b4befe")), // lavender
+		help:          lipgloss.NewStyle().Foreground(lipgloss.Color("#a6adc8")),            // subtext0
+		accent:        lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),            // blue
 		border:        lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1),
-		statusRunning: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46")).Background(lipgloss.Color("22")).Padding(0, 1),
-		statusStopped: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("244")).Background(lipgloss.Color("235")).Padding(0, 1),
+		statusRunning: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#a6e3a1")).Background(lipgloss.Color("#313244")).Padding(0, 1), // green on surface0
+		statusStopped: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#6c7086")).Background(lipgloss.Color("#313244")).Padding(0, 1), // overlay1 on surface0
+		panelBorder:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")),          // overlay1
+		panelTitle:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#b4befe")), // lavender
+		logError:      lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")),            // red
+		logWarn:       lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af")),            // yellow
+		logInfo:       lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),            // blue
 	}
 }
 
@@ -521,10 +536,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle start errors - don't mark as running
 		m.statusLineText = fmt.Sprintf("Failed to start server: %v", msg.err)
 		// Also surface error in logs panel so it's visible without scanning the status line
+		errorMsg := "\nERROR: " + msg.err.Error() + "\n"
+		coloredError := m.colorLog(errorMsg)
 		m.logBufferMu.Lock()
-		_, _ = m.logBuffer.WriteString("\nERROR: ")
-		_, _ = m.logBuffer.WriteString(msg.err.Error())
-		_, _ = m.logBuffer.WriteString("\n")
+		_, _ = m.logBuffer.WriteString(coloredError)
 		m.logBufferMu.Unlock()
 		m.logsViewport.SetContent(m.logBuffer.String())
 		return m, nil
@@ -568,8 +583,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logLineMsg:
 		// Append to buffer (with trimming to soft limit)
+		coloredLine := m.colorLog(msg.text)
 		m.logBufferMu.Lock()
-		_, _ = m.logBuffer.WriteString(msg.text)
+		_, _ = m.logBuffer.WriteString(coloredLine)
 		_, _ = m.logBuffer.WriteString("\n")
 		if m.logBuffer.Len() > logBufferSoftLimitCharacters {
 			// Trim oldest half to keep memory bounded
@@ -618,8 +634,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.serverCmd != nil {
 				// Provide immediate user feedback
 				m.statusLineText = "Stopping server..."
+				stopMsg := "\n[ui] Stopping server...\n"
+				coloredStopMsg := m.colorLog(stopMsg)
 				m.logBufferMu.Lock()
-				_, _ = m.logBuffer.WriteString("\n[ui] Stopping server...\n")
+				_, _ = m.logBuffer.WriteString(coloredStopMsg)
 				m.logBufferMu.Unlock()
 				m.logsViewport.SetContent(m.logBuffer.String())
 				return m, m.stopServerCmd()
@@ -650,9 +668,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logBufferMu.Lock()
 			m.logBuffer.Reset()
 			initialMsg := fmt.Sprintf("Starting llama-server with model: %s on port: %s...", item.name, portStr)
-			_, _ = m.logBuffer.WriteString(initialMsg)
+			coloredMsg := m.colorLog(initialMsg)
+			_, _ = m.logBuffer.WriteString(coloredMsg)
 			m.logBufferMu.Unlock()
-			m.logsViewport.SetContent(initialMsg)
+			m.logsViewport.SetContent(coloredMsg)
 			m.statusLineText = fmt.Sprintf("Starting %s on port %s...", item.name, portStr)
 			return m, m.startServerCmd(item, portStr)
 		}
@@ -696,10 +715,71 @@ func (m appModel) resizeComponents(width, height int) (tea.Model, tea.Cmd) {
 		rightWidth = 20
 	}
 
+	m.leftWidth = leftWidth
+	m.rightWidth = rightWidth
+	m.contentHeight = contentHeight
+
 	m.modelsList.SetSize(leftWidth, contentHeight)
 	m.logsViewport.Width = rightWidth
 	m.logsViewport.Height = contentHeight
 	return m, nil
+}
+
+func (m appModel) colorLog(line string) string {
+	lower := strings.ToLower(line)
+	switch {
+	case strings.Contains(lower, "error"):
+		return m.styles.logError.Render(line)
+	case strings.Contains(lower, "warn"):
+		return m.styles.logWarn.Render(line)
+	case strings.Contains(lower, "info"):
+		return m.styles.logInfo.Render(line)
+	default:
+		return line
+	}
+}
+
+func (m appModel) renderPanelWithTitle(title, body string, contentWidth int) string {
+	borderStyle := m.styles.panelBorder
+	titleStyled := m.styles.panelTitle.Render(" " + title + " ")
+	
+	// Total width includes border characters (2 chars for left/right borders)
+	total := contentWidth + 2
+	
+	// Top line with title embedded
+	topLeft := borderStyle.Render("╭")
+	topRight := borderStyle.Render("╮")
+	horiz := borderStyle.Render("─")
+	titleW := lipgloss.Width(titleStyled)
+	padLeft := 1
+	padRight := total - 2 - titleW - padLeft
+	if padRight < 0 {
+		padRight = 0
+	}
+	top := topLeft + strings.Repeat(horiz, padLeft) + titleStyled + strings.Repeat(horiz, padRight) + topRight
+	
+	// Body lines framed with borders
+	left := borderStyle.Render("│")
+	right := borderStyle.Render("│")
+	var b strings.Builder
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w < contentWidth {
+			line += strings.Repeat(" ", contentWidth-w)
+		}
+		b.WriteString(left)
+		b.WriteString(line)
+		b.WriteString(right)
+		if i < len(lines)-1 {
+			b.WriteString("\n")
+		}
+	}
+	
+	// Bottom
+	bottom := borderStyle.Render("╰" + strings.Repeat("─", total-2) + "╯")
+	
+	return top + "\n" + b.String() + "\n" + bottom
 }
 
 func (m appModel) View() string {
@@ -722,7 +802,7 @@ func (m appModel) View() string {
 	headerParts = append(headerParts, m.styles.status.Render(m.statusLineText))
 	header := strings.Join(headerParts, "  ")
 
-	left := m.styles.border.Render(m.styles.sectionTitle.Render("Models") + "\n" + m.modelsList.View())
+	left := m.renderPanelWithTitle("Models", m.modelsList.View(), m.leftWidth)
 	logTitle := "Logs"
 	if m.logToFileEnabled {
 		logTitle += " (file: on)"
@@ -732,7 +812,7 @@ func (m appModel) View() string {
 	if m.logFilePath != "" && m.serverRunning {
 		logTitle += " -> " + filepath.Base(m.logFilePath)
 	}
-	right := m.styles.border.Render(m.styles.sectionTitle.Render(logTitle) + "\n" + m.logsViewport.View())
+	right := m.renderPanelWithTitle(logTitle, m.logsViewport.View(), m.rightWidth)
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
