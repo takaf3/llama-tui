@@ -106,7 +106,6 @@ type appModel struct {
 	currentModelName string
 	currentPort      string
 	logBuffer        bytes.Buffer
-	logBufferMu      sync.Mutex
 }
 
 type uiStyles struct {
@@ -554,9 +553,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Also surface error in logs panel so it's visible without scanning the status line
 		errorMsg := "\nERROR: " + msg.err.Error() + "\n"
 		coloredError := m.colorLog(errorMsg)
-		m.logBufferMu.Lock()
 		_, _ = m.logBuffer.WriteString(coloredError)
-		m.logBufferMu.Unlock()
 		m.logsViewport.SetContent(m.logBuffer.String())
 		return m, nil
 
@@ -583,17 +580,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusLineText = fmt.Sprintf("Server stopped (error: %v)", msg.err)
 			stopMsg := fmt.Sprintf("\n[ui] Server stopped with error: %v\n", msg.err)
 			coloredStopMsg := m.colorLog(stopMsg)
-			m.logBufferMu.Lock()
 			_, _ = m.logBuffer.WriteString(coloredStopMsg)
-			m.logBufferMu.Unlock()
 			m.logsViewport.SetContent(m.logBuffer.String())
 		} else {
 			m.statusLineText = "Server stopped"
 			stopMsg := "\n[ui] Server stopped successfully\n"
 			coloredStopMsg := m.colorLog(stopMsg)
-			m.logBufferMu.Lock()
 			_, _ = m.logBuffer.WriteString(coloredStopMsg)
-			m.logBufferMu.Unlock()
 			m.logsViewport.SetContent(m.logBuffer.String())
 		}
 		// If quit was pending, now quit
@@ -605,7 +598,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logLineMsg:
 		// Append to buffer (with trimming to soft limit)
 		coloredLine := m.colorLog(msg.text)
-		m.logBufferMu.Lock()
 		_, _ = m.logBuffer.WriteString(coloredLine)
 		_, _ = m.logBuffer.WriteString("\n")
 		if m.logBuffer.Len() > logBufferSoftLimitCharacters {
@@ -616,7 +608,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_, _ = newBuf.Write(data[start:])
 			m.logBuffer = newBuf
 		}
-		m.logBufferMu.Unlock()
 
 		m.logsViewport.SetContent(m.logBuffer.String())
 		m.logsViewport.GotoBottom()
@@ -635,9 +626,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusLineText = "Stopping server before quit..."
 				stopMsg := "\n[ui] Stopping server before quit...\n"
 				coloredStopMsg := m.colorLog(stopMsg)
-				m.logBufferMu.Lock()
 				_, _ = m.logBuffer.WriteString(coloredStopMsg)
-				m.logBufferMu.Unlock()
 				m.logsViewport.SetContent(m.logBuffer.String())
 				return m, m.stopServerCmd()
 			}
@@ -685,9 +674,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusLineText = "Stopping server..."
 				stopMsg := "\n[ui] Stopping server...\n"
 				coloredStopMsg := m.colorLog(stopMsg)
-				m.logBufferMu.Lock()
 				_, _ = m.logBuffer.WriteString(coloredStopMsg)
-				m.logBufferMu.Unlock()
 				m.logsViewport.SetContent(m.logBuffer.String())
 				return m, m.stopServerCmd()
 			}
@@ -741,12 +728,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.portInput.Blur()
 			}
 			// Clear logs for a new session and set initial message
-			m.logBufferMu.Lock()
 			m.logBuffer.Reset()
 			initialMsg := fmt.Sprintf("Starting llama-server with model: %s on port: %s...", item.name, portStr)
 			coloredMsg := m.colorLog(initialMsg)
 			_, _ = m.logBuffer.WriteString(coloredMsg)
-			m.logBufferMu.Unlock()
 			m.logsViewport.SetContent(coloredMsg)
 			m.statusLineText = fmt.Sprintf("Starting %s on port %s...", item.name, portStr)
 			return m, m.startServerCmd(item, portStr)
