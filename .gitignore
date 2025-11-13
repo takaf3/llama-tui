@@ -1,0 +1,35 @@
+# Binaries
+/llama-tui
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build cache
+/bin/
+/build/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Dependencies
+/vendor/
+
+# Environment files
+/.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
