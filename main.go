@@ -478,6 +478,18 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m.resizeComponents(msg.Width, msg.Height)
 
+	case tea.MouseMsg:
+		// Route mouse wheel events to the logs viewport and do not update the models list with them.
+		switch msg.Type {
+		case tea.MouseWheelUp, tea.MouseWheelDown, tea.MouseWheelLeft, tea.MouseWheelRight:
+			var cmd tea.Cmd
+			m.logsViewport, cmd = m.logsViewport.Update(msg)
+			return m, cmd
+		default:
+			// Ignore other mouse events for now
+			return m, nil
+		}
+
 	case scanDoneMsg:
 		if msg.err != nil {
 			m.statusLineText = fmt.Sprintf("Scan error: %v", msg.err)
@@ -732,7 +744,7 @@ func (m appModel) View() string {
 
 func main() {
 	m := initialModel()
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)
