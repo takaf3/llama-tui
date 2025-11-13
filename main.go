@@ -53,6 +53,9 @@ type (
 		err error
 	}
 	startedMsg struct{}
+	startErrorMsg struct {
+		err error
+	}
 	stoppedMsg struct {
 		err error
 	}
@@ -80,9 +83,11 @@ type appModel struct {
 	serverCmd         *exec.Cmd
 	serverCtx         context.Context
 	serverCancel      context.CancelFunc
-	serverRunning bool
-	logBuffer     bytes.Buffer
-	logBufferMu   sync.Mutex
+	serverRunning    bool
+	currentModelName string
+	currentPort      string
+	logBuffer        bytes.Buffer
+	logBufferMu      sync.Mutex
 }
 
 type uiStyles struct {
@@ -92,16 +97,20 @@ type uiStyles struct {
 	help         lipgloss.Style
 	accent       lipgloss.Style
 	border       lipgloss.Style
+	statusRunning lipgloss.Style
+	statusStopped lipgloss.Style
 }
 
 func newStyles() uiStyles {
 	return uiStyles{
-		title:        lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")),
-		status:       lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
-		sectionTitle: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("141")),
-		help:         lipgloss.NewStyle().Foreground(lipgloss.Color("246")),
-		accent:       lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
-		border:       lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1),
+		title:         lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")),
+		status:        lipgloss.NewStyle().Foreground(lipgloss.Color("244")),
+		sectionTitle:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("141")),
+		help:          lipgloss.NewStyle().Foreground(lipgloss.Color("246")),
+		accent:        lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
+		border:        lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1),
+		statusRunning: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46")).Background(lipgloss.Color("22")).Padding(0, 1),
+		statusStopped: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("244")).Background(lipgloss.Color("235")).Padding(0, 1),
 	}
 }
 
@@ -142,6 +151,8 @@ func initialModel() appModel {
 		exitChan:         nil,
 		serverCmd:        nil,
 		serverRunning:    false,
+		currentModelName: "",
+		currentPort:      "",
 	}
 
 	return m
@@ -222,12 +233,12 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			cancel()
-			return startedMsg{}
+			return startErrorMsg{err: fmt.Errorf("failed to create stdout pipe: %w", err)}
 		}
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
 			cancel()
-			return startedMsg{}
+			return startErrorMsg{err: fmt.Errorf("failed to create stderr pipe: %w", err)}
 		}
 
 		// Prepare file logging if enabled
@@ -249,7 +260,14 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 		logChan := make(chan string, 1024)
 		exitChan := make(chan error, 1)
 
-		// Reader goroutine
+		// Start the command synchronously to catch immediate errors
+		err = cmd.Start()
+		if err != nil {
+			cancel()
+			return startErrorMsg{err: fmt.Errorf("failed to start llama-server: %w", err)}
+		}
+
+		// Reader goroutine - always streams logs to TUI regardless of file logging
 		go func() {
 			defer func() {
 				if fileWriter != nil {
@@ -268,9 +286,11 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 				defer wg.Done()
 				for scanner.Scan() {
 					line := scanner.Text()
+					// Always write to file if enabled
 					if fileWriter != nil {
 						_, _ = io.WriteString(fileWriter, line+"\n")
 					}
+					// Always send to log channel for TUI display
 					select {
 					case logChan <- line:
 					default:
@@ -284,27 +304,23 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 			wg.Wait()
 		}()
 
-		// Wait goroutine
+		// Wait goroutine - monitors process exit
 		go func() {
-			err := cmd.Start()
-			if err != nil {
-				exitChan <- err
-				close(exitChan)
-				close(logChan)
-				return
-			}
 			waitErr := cmd.Wait()
 			exitChan <- waitErr
 			close(exitChan)
 			close(logChan)
 		}()
 
+		// Only set running state if Start() succeeded
 		m.serverCtx = ctx
 		m.serverCancel = cancel
 		m.serverCmd = cmd
 		m.logChan = logChan
 		m.exitChan = exitChan
 		m.serverRunning = true
+		m.currentModelName = selected.name
+		m.currentPort = port
 		m.statusLineText = fmt.Sprintf("Serving %s on port %s", selected.name, port)
 
 		return startedMsg{}
@@ -391,9 +407,16 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Start receiving logs and exit notifications
 		return m, tea.Batch(m.waitForLogLine(), m.waitForExit())
 
+	case startErrorMsg:
+		// Handle start errors - don't mark as running
+		m.statusLineText = fmt.Sprintf("Failed to start server: %v", msg.err)
+		return m, nil
+
 	case stoppedMsg:
 		// Cleanup state
 		m.serverRunning = false
+		m.currentModelName = ""
+		m.currentPort = ""
 		m.serverCmd = nil
 		m.serverCancel = nil
 		m.logChan = nil
@@ -402,11 +425,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.logFile.Close()
 			m.logFile = nil
 		}
+		m.logFilePath = ""
 		m.statusLineText = "Server stopped"
 		return m, nil
 
 	case serverExitedMsg:
 		m.serverRunning = false
+		m.currentModelName = ""
+		m.currentPort = ""
 		m.serverCmd = nil
 		m.serverCancel = nil
 		m.logChan = nil
@@ -415,6 +441,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.logFile.Close()
 			m.logFile = nil
 		}
+		m.logFilePath = ""
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 			m.statusLineText = fmt.Sprintf("Server exited with error: %v", msg.err)
 		} else {
@@ -496,11 +523,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			portStr = strconv.Itoa(portNum)
-			// Clear logs for a new session
+			// Clear logs for a new session and set initial message
 			m.logBufferMu.Lock()
 			m.logBuffer.Reset()
+			initialMsg := fmt.Sprintf("Starting llama-server with model: %s on port: %s...", item.name, portStr)
+			_, _ = m.logBuffer.WriteString(initialMsg)
 			m.logBufferMu.Unlock()
-			m.logsViewport.SetContent("")
+			m.logsViewport.SetContent(initialMsg)
+			m.statusLineText = fmt.Sprintf("Starting %s on port %s...", item.name, portStr)
 			return m, m.startServerCmd(item, portStr)
 		}
 		// Update nested components for unhandled keys
@@ -550,7 +580,24 @@ func (m appModel) resizeComponents(width, height int) (tea.Model, tea.Cmd) {
 }
 
 func (m appModel) View() string {
-	header := m.styles.title.Render(appTitle) + "  " + m.styles.status.Render(m.statusLineText)
+	// Render status chip
+	var statusChip string
+	if m.serverRunning {
+		statusChip = m.styles.statusRunning.Render("[RUNNING]")
+	} else {
+		statusChip = m.styles.statusStopped.Render("[STOPPED]")
+	}
+	
+	// Build header with status chip and model info
+	headerParts := []string{
+		m.styles.title.Render(appTitle),
+		statusChip,
+	}
+	if m.serverRunning && m.currentModelName != "" && m.currentPort != "" {
+		headerParts = append(headerParts, m.styles.accent.Render(fmt.Sprintf("%s:%s", m.currentModelName, m.currentPort)))
+	}
+	headerParts = append(headerParts, m.styles.status.Render(m.statusLineText))
+	header := strings.Join(headerParts, "  ")
 
 	left := m.styles.border.Render(m.styles.sectionTitle.Render("Models") + "\n" + m.modelsList.View())
 	logTitle := "Logs"
