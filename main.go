@@ -100,6 +100,9 @@ type appModel struct {
 	serverCtx         context.Context
 	serverCancel      context.CancelFunc
 	serverRunning    bool
+	serverStopping   bool
+	pendingQuit      bool
+	showHelp         bool
 	currentModelName string
 	currentPort      string
 	logBuffer        bytes.Buffer
@@ -114,12 +117,14 @@ type uiStyles struct {
 	accent        lipgloss.Style
 	border        lipgloss.Style
 	statusRunning lipgloss.Style
+	statusStopping lipgloss.Style
 	statusStopped lipgloss.Style
 	panelBorder   lipgloss.Style
 	panelTitle    lipgloss.Style
 	logError      lipgloss.Style
 	logWarn       lipgloss.Style
 	logInfo       lipgloss.Style
+	disabled      lipgloss.Style
 }
 
 func newStyles() uiStyles {
@@ -132,12 +137,14 @@ func newStyles() uiStyles {
 		accent:        lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),            // blue
 		border:        lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1),
 		statusRunning: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#a6e3a1")).Background(lipgloss.Color("#313244")).Padding(0, 1), // green on surface0
+		statusStopping: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f9e2af")).Background(lipgloss.Color("#313244")).Padding(0, 1), // yellow on surface0
 		statusStopped: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#6c7086")).Background(lipgloss.Color("#313244")).Padding(0, 1), // overlay1 on surface0
 		panelBorder:   lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")),          // overlay1
 		panelTitle:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#b4befe")), // lavender
 		logError:      lipgloss.NewStyle().Foreground(lipgloss.Color("#f38ba8")),            // red
 		logWarn:       lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af")),            // yellow
 		logInfo:       lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),            // blue
+		disabled:      lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")),            // overlay1 (dimmed)
 	}
 }
 
@@ -178,6 +185,9 @@ func initialModel() appModel {
 		exitChan:         nil,
 		serverCmd:        nil,
 		serverRunning:    false,
+		serverStopping:   false,
+		pendingQuit:      false,
+		showHelp:         false,
 		currentModelName: "",
 		currentPort:      "",
 	}
@@ -259,7 +269,7 @@ func getLlamaServerBinary() (string, error) {
 	}
 	bin, err := exec.LookPath("llama-server")
 	if err != nil {
-		return "", fmt.Errorf("llama-server not found in PATH. Install it (e.g., brew install llama.cpp) or set LLAMA_SERVER_BIN to its absolute path. PATH=%s", os.Getenv("PATH"))
+		return "", fmt.Errorf("llama-server not found in PATH. Install it (e.g., brew install llama.cpp) or set LLAMA_SERVER_BIN to its absolute path")
 	}
 	return bin, nil
 }
@@ -459,9 +469,10 @@ func (m appModel) waitForExit() tea.Cmd {
 func (m *appModel) stopServerCmd() tea.Cmd {
 	return func() tea.Msg {
 		if m.serverCmd == nil {
-			return stoppedMsg{}
+			return nil
 		}
-		// Attempt graceful stop
+		// Attempt graceful stop - don't return stoppedMsg here
+		// Wait for serverExitedMsg to confirm actual exit
 		if m.serverCancel != nil {
 			m.serverCancel()
 		}
@@ -479,7 +490,7 @@ func (m *appModel) stopServerCmd() tea.Cmd {
 				}
 			}(m.serverCmd)
 		}
-		return stoppedMsg{}
+		return nil
 	}
 }
 
@@ -526,10 +537,15 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logChan = msg.logChan
 		m.exitChan = msg.exitChan
 		m.serverRunning = true
+		m.serverStopping = false
 		m.currentModelName = msg.modelName
 		m.currentPort = msg.port
 		m.logFilePath = msg.logFilePath
 		m.statusLineText = fmt.Sprintf("Serving %s on port %s", msg.modelName, msg.port)
+		// Blur port input when server starts
+		if m.portInput.Focused() {
+			m.portInput.Blur()
+		}
 		return m, tea.Batch(m.waitForLogLine(), m.waitForExit())
 
 	case startErrorMsg:
@@ -545,24 +561,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case stoppedMsg:
-		// Cleanup state
-		m.serverRunning = false
-		m.currentModelName = ""
-		m.currentPort = ""
-		m.serverCmd = nil
-		m.serverCancel = nil
-		m.logChan = nil
-		m.exitChan = nil
-		if m.logFile != nil {
-			_ = m.logFile.Close()
-			m.logFile = nil
-		}
-		m.logFilePath = ""
-		m.statusLineText = "Server stopped"
+		// This message is no longer used - cleanup happens in serverExitedMsg
 		return m, nil
 
 	case serverExitedMsg:
+		// Cleanup state - this is where we actually confirm the server has stopped
 		m.serverRunning = false
+		m.serverStopping = false
 		m.currentModelName = ""
 		m.currentPort = ""
 		m.serverCmd = nil
@@ -575,9 +580,25 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.logFilePath = ""
 		if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
-			m.statusLineText = fmt.Sprintf("Server exited with error: %v", msg.err)
+			m.statusLineText = fmt.Sprintf("Server stopped (error: %v)", msg.err)
+			stopMsg := fmt.Sprintf("\n[ui] Server stopped with error: %v\n", msg.err)
+			coloredStopMsg := m.colorLog(stopMsg)
+			m.logBufferMu.Lock()
+			_, _ = m.logBuffer.WriteString(coloredStopMsg)
+			m.logBufferMu.Unlock()
+			m.logsViewport.SetContent(m.logBuffer.String())
 		} else {
-			m.statusLineText = "Server exited"
+			m.statusLineText = "Server stopped"
+			stopMsg := "\n[ui] Server stopped successfully\n"
+			coloredStopMsg := m.colorLog(stopMsg)
+			m.logBufferMu.Lock()
+			_, _ = m.logBuffer.WriteString(coloredStopMsg)
+			m.logBufferMu.Unlock()
+			m.logsViewport.SetContent(m.logBuffer.String())
+		}
+		// If quit was pending, now quit
+		if m.pendingQuit {
+			return m, tea.Quit
 		}
 		return m, nil
 
@@ -607,14 +628,36 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			// Ensure server is stopped
-			if m.serverRunning {
-				return m, tea.Sequence(m.stopServerCmd(), tea.Quit)
+			// Ensure server is stopped before quitting
+			if m.serverRunning && !m.serverStopping {
+				m.pendingQuit = true
+				m.serverStopping = true
+				m.statusLineText = "Stopping server before quit..."
+				stopMsg := "\n[ui] Stopping server before quit...\n"
+				coloredStopMsg := m.colorLog(stopMsg)
+				m.logBufferMu.Lock()
+				_, _ = m.logBuffer.WriteString(coloredStopMsg)
+				m.logBufferMu.Unlock()
+				m.logsViewport.SetContent(m.logBuffer.String())
+				return m, m.stopServerCmd()
+			}
+			// If already stopping, just quit (will happen after serverExitedMsg)
+			if m.serverStopping {
+				return m, nil
 			}
 			return m, tea.Quit
 		case "r":
+			if m.serverRunning || m.serverStopping {
+				m.statusLineText = "Cannot refresh while server is running"
+				return m, nil
+			}
+			m.statusLineText = "Scanning for models..."
 			return m, m.scanModelsCmd()
 		case "l":
+			if m.serverRunning || m.serverStopping {
+				m.statusLineText = "Cannot toggle logging while server is running"
+				return m, nil
+			}
 			// Toggle file logging (applies on next start)
 			m.logToFileEnabled = !m.logToFileEnabled
 			if m.logToFileEnabled {
@@ -624,15 +667,21 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "p":
+			if m.serverRunning || m.serverStopping {
+				m.statusLineText = "Cannot edit port while server is running"
+				return m, nil
+			}
 			if m.portInput.Focused() {
 				m.portInput.Blur()
+				m.statusLineText = "Port input unfocused"
 			} else {
 				m.portInput.Focus()
+				m.statusLineText = "Port input focused - type port number"
 			}
 			return m, nil
 		case "s":
-			if m.serverCmd != nil {
-				// Provide immediate user feedback
+			if m.serverRunning && !m.serverStopping {
+				m.serverStopping = true
 				m.statusLineText = "Stopping server..."
 				stopMsg := "\n[ui] Stopping server...\n"
 				coloredStopMsg := m.colorLog(stopMsg)
@@ -642,10 +691,33 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.logsViewport.SetContent(m.logBuffer.String())
 				return m, m.stopServerCmd()
 			}
+			if m.serverStopping {
+				m.statusLineText = "Server is already stopping..."
+				return m, nil
+			}
+			if !m.serverRunning {
+				m.statusLineText = "No server is running"
+				return m, nil
+			}
+			return m, nil
+		case "h":
+			m.showHelp = !m.showHelp
+			return m, nil
+		case "esc":
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
+			// If port input is focused, blur it on esc
+			if m.portInput.Focused() {
+				m.portInput.Blur()
+				return m, nil
+			}
 			return m, nil
 		case "enter":
 			// Start server on selected model
-			if m.serverRunning {
+			if m.serverRunning || m.serverStopping {
+				m.statusLineText = "Server is already running or stopping"
 				return m, nil
 			}
 			item, ok := m.modelsList.SelectedItem().(modelItem)
@@ -664,6 +736,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			portStr = strconv.Itoa(portNum)
+			// Blur port input before starting server
+			if m.portInput.Focused() {
+				m.portInput.Blur()
+			}
 			// Clear logs for a new session and set initial message
 			m.logBufferMu.Lock()
 			m.logBuffer.Reset()
@@ -785,7 +861,9 @@ func (m appModel) renderPanelWithTitle(title, body string, contentWidth int) str
 func (m appModel) View() string {
 	// Render status chip
 	var statusChip string
-	if m.serverRunning {
+	if m.serverStopping {
+		statusChip = m.styles.statusStopping.Render("[STOPPING]")
+	} else if m.serverRunning {
 		statusChip = m.styles.statusRunning.Render("[RUNNING]")
 	} else {
 		statusChip = m.styles.statusStopped.Render("[STOPPED]")
@@ -816,13 +894,83 @@ func (m appModel) View() string {
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
+	// Build explicit status bar
+	var statusText string
+	if m.serverStopping {
+		statusText = "Status: " + m.styles.statusStopping.Render("[STOPPING]")
+	} else if m.serverRunning {
+		statusText = "Status: " + m.styles.statusRunning.Render("[RUNNING]")
+	} else {
+		statusText = "Status: " + m.styles.statusStopped.Render("[STOPPED]")
+	}
+	
+	if m.currentModelName != "" {
+		statusText += " • Model: " + m.styles.accent.Render(m.currentModelName)
+	}
+	if m.currentPort != "" {
+		statusText += " • Port: " + m.styles.accent.Render(m.currentPort)
+	}
+	statusBar := m.styles.status.Render(statusText)
+
+	// State-based help line
+	var helpLine string
+	if m.serverStopping {
+		helpLine = m.styles.help.Render("Stopping server... Please wait")
+	} else if m.serverRunning {
+		helpLine = m.styles.help.Render("[s] stop  [h] help  [q] quit")
+	} else {
+		helpLine = m.styles.help.Render("[enter] start  [r] refresh  [p] toggle port  [l] toggle file log  [h] help  [q] quit")
+	}
+
+	// Render port input - dimmed if server is running/stopping
+	portInputView := m.portInput.View()
+	if m.serverRunning || m.serverStopping {
+		portInputView = m.styles.disabled.Render(portInputView)
+	}
+	
 	helpLines := []string{
-		m.styles.help.Render("[enter] start  [s] stop  [r] refresh  [p] toggle port input  [l] toggle file log  [q] quit"),
-		m.styles.help.Render("Port: ") + m.portInput.View(),
+		statusBar,
+		helpLine,
+		m.styles.help.Render("Port: ") + portInputView,
 	}
 	footer := strings.Join(helpLines, "\n")
 
-	return header + "\n\n" + content + "\n\n" + footer
+	view := header + "\n\n" + content + "\n\n" + footer
+
+	// Show help overlay if enabled
+	if m.showHelp {
+		helpContent := []string{
+			"Keyboard Shortcuts:",
+			"",
+			"  [enter]  Start server with selected model",
+			"  [s]      Stop the running server",
+			"  [r]      Refresh/rescan models list",
+			"  [p]      Focus/unfocus port input",
+			"  [l]      Toggle file logging (applies on next start)",
+			"  [h]      Toggle this help overlay",
+			"  [esc]    Close help overlay or unfocus port input",
+			"  [q]      Quit (stops server if running)",
+			"  [ctrl+c] Quit (same as [q])",
+			"",
+			"Status Indicators:",
+			"  [RUNNING]  Server is active",
+			"  [STOPPING] Server shutdown in progress",
+			"  [STOPPED]  No server running",
+			"",
+			"Press [h] or [esc] to close this help",
+		}
+		helpText := strings.Join(helpContent, "\n")
+		helpWidth := m.width - 8
+		if helpWidth < 50 {
+			helpWidth = 50
+		}
+		helpPanel := m.renderPanelWithTitle("Help", helpText, helpWidth)
+		// Overlay help centered on top of the view
+		overlay := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, helpPanel)
+		return overlay
+	}
+
+	return view
 }
 
 func main() {
