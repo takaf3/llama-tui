@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,16 @@ type (
 		err error
 	}
 	startedMsg struct{}
+	startedWithStateMsg struct {
+		logChan     chan string
+		exitChan    chan error
+		ctx         context.Context
+		cancel      context.CancelFunc
+		cmd         *exec.Cmd
+		modelName   string
+		port        string
+		logFilePath string
+	}
 	startErrorMsg struct {
 		err error
 	}
@@ -219,14 +230,37 @@ func validatePort(portStr string) (int, error) {
 	return port, nil
 }
 
+// getLlamaServerBinary resolves the llama-server executable path.
+// Priority:
+// 1) LLAMA_SERVER_BIN environment variable (absolute path)
+// 2) Look up "llama-server" in PATH
+func getLlamaServerBinary() (string, error) {
+	if envPath := strings.TrimSpace(os.Getenv("LLAMA_SERVER_BIN")); envPath != "" {
+		if info, err := os.Stat(envPath); err == nil && !info.IsDir() {
+			return envPath, nil
+		}
+		return "", fmt.Errorf("LLAMA_SERVER_BIN points to an invalid path: %q", envPath)
+	}
+	bin, err := exec.LookPath("llama-server")
+	if err != nil {
+		return "", fmt.Errorf("llama-server not found in PATH. Install it (e.g., brew install llama.cpp) or set LLAMA_SERVER_BIN to its absolute path. PATH=%s", os.Getenv("PATH"))
+	}
+	return bin, nil
+}
+
 func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 	return func() tea.Msg {
-		if m.serverRunning {
-			return startedMsg{}
-		}
+		// Do not mutate model state here; return it via a message and let Update handle it.
+		// This avoids pointer-to-model mutations outside of the Update loop.
 
 		ctx, cancel := context.WithCancel(context.Background())
-		cmd := exec.CommandContext(ctx, "llama-server", "-m", selected.path, "-p", port)
+		// Resolve llama-server binary
+		bin, binErr := getLlamaServerBinary()
+		if binErr != nil {
+			cancel()
+			return startErrorMsg{err: binErr}
+		}
+		cmd := exec.CommandContext(ctx, bin, "-m", selected.path, "--port", port)
 		cmdEnv := os.Environ()
 		cmd.Env = cmdEnv
 
@@ -243,6 +277,7 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 
 		// Prepare file logging if enabled
 		var fileWriter io.WriteCloser
+		var logFilePath string
 		if m.logToFileEnabled {
 			_ = os.MkdirAll(m.logsDir, 0o755)
 			filename := time.Now().Format("20060102_150405") + ".log"
@@ -251,8 +286,7 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 			if ferr != nil {
 				// If file cannot be opened, continue without file
 			} else {
-				m.logFile = f
-				m.logFilePath = filePath
+				logFilePath = filePath
 				fileWriter = f
 			}
 		}
@@ -265,6 +299,20 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 		if err != nil {
 			cancel()
 			return startErrorMsg{err: fmt.Errorf("failed to start llama-server: %w", err)}
+		}
+
+		// Emit quick diagnostics to the log channel for visibility
+		select {
+		case logChan <- fmt.Sprintf("Resolved llama-server binary: %s", bin):
+		default:
+		}
+		select {
+		case logChan <- fmt.Sprintf("Exec: %s -m %s -p %s", bin, selected.path, port):
+		default:
+		}
+		select {
+		case logChan <- "Waiting for server to become ready...":
+		default:
 		}
 
 		// Reader goroutine - always streams logs to TUI regardless of file logging
@@ -302,6 +350,47 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 			go copyFn(stdoutScanner)
 			go copyFn(stderrScanner)
 			wg.Wait()
+			// Close the log channel only after both stdout and stderr are fully read
+			close(logChan)
+		}()
+
+		// Readiness probe goroutine - check when port starts accepting connections
+		go func() {
+			addresses := []string{"127.0.0.1:" + port, "[::1]:" + port}
+			deadline := time.Now().Add(90 * time.Second)
+			dialTimeout := 500 * time.Millisecond
+			for {
+				// Stop probing if process has exited (exitChan would close soon after)
+				select {
+				case <-exitChan:
+					return
+				default:
+				}
+				ready := false
+				for _, addr := range addresses {
+					conn, cerr := net.DialTimeout("tcp", addr, dialTimeout)
+					if cerr == nil {
+						_ = conn.Close()
+						ready = true
+						break;
+					}
+				}
+				if ready {
+					select {
+					case logChan <- fmt.Sprintf("Ready: listening on port %s", port):
+					default:
+					}
+					return
+				}
+				if time.Now().After(deadline) {
+					select {
+					case logChan <- fmt.Sprintf("Warning: no readiness detected on port %s after 90s. It may still be loading the model (20B models can take a while).", port):
+					default:
+					}
+					return
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
 		}()
 
 		// Wait goroutine - monitors process exit
@@ -309,21 +398,19 @@ func (m *appModel) startServerCmd(selected modelItem, port string) tea.Cmd {
 			waitErr := cmd.Wait()
 			exitChan <- waitErr
 			close(exitChan)
-			close(logChan)
 		}()
 
-		// Only set running state if Start() succeeded
-		m.serverCtx = ctx
-		m.serverCancel = cancel
-		m.serverCmd = cmd
-		m.logChan = logChan
-		m.exitChan = exitChan
-		m.serverRunning = true
-		m.currentModelName = selected.name
-		m.currentPort = port
-		m.statusLineText = fmt.Sprintf("Serving %s on port %s", selected.name, port)
-
-		return startedMsg{}
+		// Return process state via message; Update will attach it to the model.
+		return startedWithStateMsg{
+			logChan:     logChan,
+			exitChan:    exitChan,
+			ctx:         ctx,
+			cancel:      cancel,
+			cmd:         cmd,
+			modelName:   selected.name,
+			port:        port,
+			logFilePath: logFilePath,
+		}
 	}
 }
 
@@ -407,9 +494,30 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Start receiving logs and exit notifications
 		return m, tea.Batch(m.waitForLogLine(), m.waitForExit())
 
+	case startedWithStateMsg:
+		// Attach process state to the model and begin receiving events
+		m.serverCtx = msg.ctx
+		m.serverCancel = msg.cancel
+		m.serverCmd = msg.cmd
+		m.logChan = msg.logChan
+		m.exitChan = msg.exitChan
+		m.serverRunning = true
+		m.currentModelName = msg.modelName
+		m.currentPort = msg.port
+		m.logFilePath = msg.logFilePath
+		m.statusLineText = fmt.Sprintf("Serving %s on port %s", msg.modelName, msg.port)
+		return m, tea.Batch(m.waitForLogLine(), m.waitForExit())
+
 	case startErrorMsg:
 		// Handle start errors - don't mark as running
 		m.statusLineText = fmt.Sprintf("Failed to start server: %v", msg.err)
+		// Also surface error in logs panel so it's visible without scanning the status line
+		m.logBufferMu.Lock()
+		_, _ = m.logBuffer.WriteString("\nERROR: ")
+		_, _ = m.logBuffer.WriteString(msg.err.Error())
+		_, _ = m.logBuffer.WriteString("\n")
+		m.logBufferMu.Unlock()
+		m.logsViewport.SetContent(m.logBuffer.String())
 		return m, nil
 
 	case stoppedMsg:

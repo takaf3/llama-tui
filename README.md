@@ -48,7 +48,7 @@ $HOME/.llamabarn/llama-server-logs/YYYYMMDD_HHMMSS.log
 
 ## Notes
 
-- The TUI uses `-m <model>` and `-p <port>` when invoking `llama-server`.
+- The TUI uses `-m <model>` and `--port <port>` when invoking `llama-server`.
 - If your `llama-server` requires different flags, adapt `main.go` accordingly.
 - File logging applies from the next server start (not mid-run).
 
