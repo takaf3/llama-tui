@@ -19,16 +19,50 @@ Built with Charmbracelet's Bubble Tea, Bubbles, and Lip Gloss libraries for a de
 
 ## Install & Run
 
+### Using Make (Recommended)
+
+Build and install to `$HOME/.local/bin`:
+
+```bash
+make build && make install
+```
+
+Make sure `$HOME/.local/bin` is in your PATH. For zsh, add to `~/.zshrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then reload your shell or run `source ~/.zshrc`.
+
+To uninstall:
+
+```bash
+make uninstall
+```
+
+### Manual Installation
+
+Build manually:
+
 ```bash
 go build -o llama-tui
 ./llama-tui
 ```
 
-Or run directly with:
+Or run directly without building:
 
 ```bash
 go run .
 ```
+
+### Other Make Targets
+
+- `make build` - Build the binary to `./bin/llama-tui`
+- `make install` - Install to `$HOME/.local/bin` (or override with `INSTALL_DIR`)
+- `make uninstall` - Remove from `$HOME/.local/bin`
+- `make run` - Run directly with `go run .`
+- `make clean` - Remove the `./bin` directory
 
 ## Usage
 
