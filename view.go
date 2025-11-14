@@ -115,7 +115,12 @@ func (m appModel) View() string {
 	if m.serverRunning && m.currentModelName != "" && m.currentPort != "" {
 		headerParts = append(headerParts, m.styles.accent.Render(fmt.Sprintf("%s:%s", m.currentModelName, m.currentPort)))
 	}
-	headerParts = append(headerParts, m.styles.status.Render(m.statusLineText))
+	// Use warning style for confirmation messages, regular status style otherwise
+	if m.confirmAction != confirmNone {
+		headerParts = append(headerParts, m.styles.confirmWarning.Render(m.statusLineText))
+	} else {
+		headerParts = append(headerParts, m.styles.status.Render(m.statusLineText))
+	}
 	header := strings.Join(headerParts, "  ")
 
 	left := m.renderPanelWithTitle("Models", m.modelsList.View(), m.leftWidth)
@@ -152,7 +157,11 @@ func (m appModel) View() string {
 
 	// State-based help line
 	var helpLine string
-	if m.serverStopping {
+	if m.confirmAction == confirmQuit {
+		helpLine = m.styles.confirmWarning.Render("Quit? Press q again to confirm, esc to cancel")
+	} else if m.confirmAction == confirmStop {
+		helpLine = m.styles.confirmWarning.Render("Stop server? Press s again to confirm, esc to cancel")
+	} else if m.serverStopping {
 		helpLine = m.styles.help.Render("Stopping server... Please wait")
 	} else if m.serverRunning {
 		helpLine = m.styles.help.Render("[s] stop  [h] help  [q] quit")
@@ -181,14 +190,14 @@ func (m appModel) View() string {
 			"Keyboard Shortcuts:",
 			"",
 			"  [enter]  Start server with selected model",
-			"  [s]      Stop the running server",
+			"  [s]      Stop the running server (press twice to confirm)",
 			"  [r]      Refresh/rescan models list",
 			"  [p]      Focus/unfocus port input",
 			"  [l]      Toggle file logging (applies on next start)",
 			"  [h]      Toggle this help overlay",
-			"  [esc]    Close help overlay or unfocus port input",
-			"  [q]      Quit (stops server if running)",
-			"  [ctrl+c] Quit (same as [q])",
+			"  [esc]    Cancel confirmation, close help, or unfocus port",
+			"  [q]      Quit (press twice to confirm; stops server if running)",
+			"  [ctrl+c] Quit immediately (bypasses confirmation)",
 			"",
 			"Status Indicators:",
 			"  [RUNNING]  Server is active",

@@ -18,6 +18,7 @@ type uiStyles struct {
 	logWarn        lipgloss.Style
 	logInfo        lipgloss.Style
 	disabled       lipgloss.Style
+	confirmWarning lipgloss.Style
 }
 
 func newStyles() uiStyles {
@@ -38,5 +39,6 @@ func newStyles() uiStyles {
 		logWarn:        lipgloss.NewStyle().Foreground(lipgloss.Color("#f9e2af")),                                                                // yellow
 		logInfo:        lipgloss.NewStyle().Foreground(lipgloss.Color("#89b4fa")),                                                                // blue
 		disabled:       lipgloss.NewStyle().Foreground(lipgloss.Color("#6c7086")),                                                                // overlay1 (dimmed)
+		confirmWarning: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#fab387")).Background(lipgloss.Color("#313244")), // orange/peach on surface0, bold
 	}
 }
