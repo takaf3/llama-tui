@@ -7,6 +7,7 @@ Built with Charmbracelet's Bubble Tea, Bubbles, and Lip Gloss libraries for a de
 ## Features
 
 - Lists `.gguf` models under `$HOME/.llamabarn/` (recursively)
+- Automatically groups multipart GGUF model shards (e.g., `model-00001-of-00003.gguf`) into a single model entry
 - Starts `llama-server` with the selected model and chosen port
 - Streams server logs live in the UI
 - Optional log file output to `$HOME/.llamabarn/llama-server-logs/`
@@ -126,6 +127,15 @@ All actions provide clear feedback:
 - Port focus: Shows "Port input focused/unfocused"
 - Toggle logging: Shows "Log to file: enabled/disabled"
 - Refresh: Shows "Scanning for models..." and result count
+
+### Multipart GGUF Models
+
+Large GGUF models are often split into multiple shard files (e.g., `gpt-oss-120b-mxfp4-00001-of-00003.gguf`, `gpt-oss-120b-mxfp4-00002-of-00003.gguf`, etc.). llama-tui automatically detects and groups these multipart models:
+
+- Files matching the pattern `*-XXXXX-of-YYYYY.gguf` are grouped into a single model entry
+- The grouped model appears with the base name (without the shard suffix) in the model list
+- When starting the server, llama-tui passes the first shard's path to `llama-server`, which automatically detects and loads all shard parts from the same directory
+- This ensures multipart models appear as one logical model in the UI while maintaining compatibility with `llama-server`'s multipart model handling
 
 ## Notes
 
