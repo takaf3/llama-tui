@@ -44,6 +44,15 @@ type (
 	}
 )
 
+// confirmation action type
+type confirmAction int
+
+const (
+	confirmNone confirmAction = iota
+	confirmQuit
+	confirmStop
+)
+
 // model state
 type appModel struct {
 	width  int
@@ -77,6 +86,7 @@ type appModel struct {
 	currentModelName string
 	currentPort      string
 	logBuffer        bytes.Buffer
+	confirmAction    confirmAction
 }
 
 func initialModel() appModel {
@@ -121,6 +131,7 @@ func initialModel() appModel {
 		showHelp:         false,
 		currentModelName: "",
 		currentPort:      "",
+		confirmAction:    confirmNone,
 	}
 
 	return m

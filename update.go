@@ -11,6 +11,49 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// handleQuit performs the actual quit action without confirmation concerns.
+// If server is running, it sets pendingQuit and stops the server first.
+func (m appModel) handleQuit() (appModel, tea.Cmd) {
+	// Ensure server is stopped before quitting
+	if m.serverRunning && !m.serverStopping {
+		m.pendingQuit = true
+		m.serverStopping = true
+		m.statusLineText = "Stopping server before quit..."
+		stopMsg := "\n[ui] Stopping server before quit...\n"
+		coloredStopMsg := m.colorLog(stopMsg)
+		_, _ = m.logBuffer.WriteString(coloredStopMsg)
+		m.logsViewport.SetContent(m.logBuffer.String())
+		return m, m.stopServerCmd()
+	}
+	// If already stopping, just quit (will happen after serverExitedMsg)
+	if m.serverStopping {
+		return m, nil
+	}
+	return m, tea.Quit
+}
+
+// handleStop performs the actual stop action without confirmation concerns.
+func (m appModel) handleStop() (appModel, tea.Cmd) {
+	if m.serverRunning && !m.serverStopping {
+		m.serverStopping = true
+		m.statusLineText = "Stopping server..."
+		stopMsg := "\n[ui] Stopping server...\n"
+		coloredStopMsg := m.colorLog(stopMsg)
+		_, _ = m.logBuffer.WriteString(coloredStopMsg)
+		m.logsViewport.SetContent(m.logBuffer.String())
+		return m, m.stopServerCmd()
+	}
+	if m.serverStopping {
+		m.statusLineText = "Server is already stopping..."
+		return m, nil
+	}
+	if !m.serverRunning {
+		m.statusLineText = "No server is running"
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -135,24 +178,30 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			// Ensure server is stopped before quitting
-			if m.serverRunning && !m.serverStopping {
-				m.pendingQuit = true
-				m.serverStopping = true
-				m.statusLineText = "Stopping server before quit..."
-				stopMsg := "\n[ui] Stopping server before quit...\n"
-				coloredStopMsg := m.colorLog(stopMsg)
-				_, _ = m.logBuffer.WriteString(coloredStopMsg)
-				m.logsViewport.SetContent(m.logBuffer.String())
-				return m, m.stopServerCmd()
+		// Cancel any pending confirmation if a non-confirm key is pressed
+		// (except esc which is handled separately, and the matching confirm key)
+		keyStr := msg.String()
+		if m.confirmAction != confirmNone && keyStr != "esc" &&
+			!(m.confirmAction == confirmQuit && keyStr == "q") &&
+			!(m.confirmAction == confirmStop && keyStr == "s") {
+			m.confirmAction = confirmNone
+		}
+
+		switch keyStr {
+		case "ctrl+c":
+			// ctrl+c bypasses confirmation - immediate quit
+			return m.handleQuit()
+		case "q":
+			// Quit with confirmation
+			if m.confirmAction == confirmQuit {
+				// Second press - actually quit
+				m.confirmAction = confirmNone
+				return m.handleQuit()
 			}
-			// If already stopping, just quit (will happen after serverExitedMsg)
-			if m.serverStopping {
-				return m, nil
-			}
-			return m, tea.Quit
+			// First press - request confirmation
+			m.confirmAction = confirmQuit
+			m.statusLineText = "Quit requested: press q again to confirm, esc to cancel"
+			return m, nil
 		case "r":
 			if m.serverRunning || m.serverStopping {
 				m.statusLineText = "Cannot refresh while server is running"
@@ -187,28 +236,31 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "s":
+			// Stop with confirmation (only if server is running and not stopping)
 			if m.serverRunning && !m.serverStopping {
-				m.serverStopping = true
-				m.statusLineText = "Stopping server..."
-				stopMsg := "\n[ui] Stopping server...\n"
-				coloredStopMsg := m.colorLog(stopMsg)
-				_, _ = m.logBuffer.WriteString(coloredStopMsg)
-				m.logsViewport.SetContent(m.logBuffer.String())
-				return m, m.stopServerCmd()
-			}
-			if m.serverStopping {
-				m.statusLineText = "Server is already stopping..."
+				if m.confirmAction == confirmStop {
+					// Second press - actually stop
+					m.confirmAction = confirmNone
+					return m.handleStop()
+				}
+				// First press - request confirmation
+				m.confirmAction = confirmStop
+				m.statusLineText = "Stop server? Press s again to confirm, esc to cancel"
 				return m, nil
 			}
-			if !m.serverRunning {
-				m.statusLineText = "No server is running"
-				return m, nil
-			}
-			return m, nil
+			// No confirmation needed if server is not running or already stopping
+			return m.handleStop()
 		case "h":
 			m.showHelp = !m.showHelp
 			return m, nil
 		case "esc":
+			// First priority: cancel any pending confirmation
+			if m.confirmAction != confirmNone {
+				m.confirmAction = confirmNone
+				m.statusLineText = "Action cancelled"
+				return m, nil
+			}
+			// Then handle other esc behaviors
 			if m.showHelp {
 				m.showHelp = false
 				return m, nil
