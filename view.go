@@ -14,7 +14,7 @@ func (m appModel) resizeComponents(width, height int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	headerHeight := 1
+	headerHeight := 2 // Bordered header box takes 2 lines (content, bottom border) - top border removed
 	footerHeight := 2
 	contentHeight := height - headerHeight - footerHeight - 2
 	if contentHeight < 5 {
@@ -121,7 +121,14 @@ func (m appModel) View() string {
 	} else {
 		headerParts = append(headerParts, m.styles.status.Render(m.statusLineText))
 	}
-	header := strings.Join(headerParts, "  ")
+	headerContent := strings.Join(headerParts, "  ")
+	
+	// Wrap header in bordered box (without top border), constrain to terminal width if available
+	headerStyle := m.styles.border.Copy().BorderTop(false)
+	if m.width > 0 {
+		headerStyle = headerStyle.Width(m.width)
+	}
+	header := headerStyle.Render(headerContent)
 
 	left := m.renderPanelWithTitle("Models", m.modelsList.View(), m.leftWidth)
 	logTitle := "Logs"
@@ -182,7 +189,8 @@ func (m appModel) View() string {
 	}
 	footer := strings.Join(helpLines, "\n")
 
-	view := header + "\n\n" + content + "\n\n" + footer
+	// Reduced spacing since bordered header provides visual separation
+	view := header + "\n" + content + "\n\n" + footer
 
 	// Show help overlay if enabled
 	if m.showHelp {
