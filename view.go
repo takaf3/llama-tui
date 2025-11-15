@@ -9,6 +9,33 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// formatBytes formats bytes into human-readable units (GiB, MiB, KiB, B)
+func formatBytes(bytes uint64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := uint64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	var unitStr string
+	switch exp {
+	case 0:
+		unitStr = "KiB"
+	case 1:
+		unitStr = "MiB"
+	case 2:
+		unitStr = "GiB"
+	case 3:
+		unitStr = "TiB"
+	default:
+		unitStr = "PiB"
+	}
+	return fmt.Sprintf("%.1f %s", float64(bytes)/float64(div), unitStr)
+}
+
 func (m appModel) resizeComponents(width, height int) (tea.Model, tea.Cmd) {
 	if width <= 0 || height <= 0 {
 		return m, nil
@@ -159,6 +186,13 @@ func (m appModel) View() string {
 	}
 	if m.currentPort != "" {
 		statusText += " • Port: " + m.styles.accent.Render(m.currentPort)
+	}
+	// Add CPU and memory usage when server is running and metrics are available
+	if m.serverRunning && (m.cpuPercent > 0 || m.memRSSBytes > 0) {
+		statusText += " • CPU: " + m.styles.accent.Render(fmt.Sprintf("%.1f%%", m.cpuPercent))
+		if m.memRSSBytes > 0 {
+			statusText += " • Mem: " + m.styles.accent.Render(formatBytes(m.memRSSBytes))
+		}
 	}
 	statusBar := m.styles.status.Render(statusText)
 

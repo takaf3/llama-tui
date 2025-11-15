@@ -16,6 +16,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // validatePort checks if the port string is a valid port number (1-65535)
@@ -268,5 +269,40 @@ func (m *appModel) stopServerCmd() tea.Cmd {
 			}(m.serverCmd)
 		}
 		return nil
+	}
+}
+
+func (m *appModel) pollResourceUsageCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.serverCmd == nil || m.serverCmd.Process == nil {
+			return nil
+		}
+		
+		pid := int32(m.serverCmd.Process.Pid)
+		proc, err := process.NewProcess(pid)
+		if err != nil {
+			// Process not found or error accessing it - return nil to skip update
+			return nil
+		}
+		
+		cpuPercent, err := proc.CPUPercent()
+		if err != nil {
+			// Skip CPU update on error
+			cpuPercent = 0
+		}
+		
+		memInfo, err := proc.MemoryInfo()
+		if err != nil {
+			// Skip memory update on error
+			return resourceUsageMsg{
+				cpuPercent: cpuPercent,
+				memRSSBytes: 0,
+			}
+		}
+		
+		return resourceUsageMsg{
+			cpuPercent: cpuPercent,
+			memRSSBytes: memInfo.RSS,
+		}
 	}
 }
