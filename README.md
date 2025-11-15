@@ -1,5 +1,7 @@
 # llama-tui
 
+![llama-tui demo](assets/demo.gif)
+
 Fancy terminal UI wrapper for `llama-server` (OpenAI-compatible server for GGUF models).
 
 Built with Charmbracelet's Bubble Tea, Bubbles, and Lip Gloss libraries for a delightful TUI experience. See Charmbracelet projects: `https://github.com/charmbracelet`.
