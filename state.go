@@ -22,6 +22,10 @@ type (
 	logLineMsg struct {
 		text string
 	}
+	resourceUsageMsg struct {
+		cpuPercent float64
+		memRSSBytes uint64
+	}
 	serverExitedMsg struct {
 		err error
 	}
@@ -87,6 +91,8 @@ type appModel struct {
 	currentPort      string
 	logBuffer        bytes.Buffer
 	confirmAction    confirmAction
+	cpuPercent       float64
+	memRSSBytes      uint64
 }
 
 func initialModel() appModel {
@@ -132,6 +138,8 @@ func initialModel() appModel {
 		currentModelName: "",
 		currentPort:      "",
 		confirmAction:    confirmNone,
+		cpuPercent:       0,
+		memRSSBytes:      0,
 	}
 
 	return m

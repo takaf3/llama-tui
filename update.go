@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // handleQuit performs the actual quit action without confirmation concerns.
@@ -106,7 +108,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.portInput.Focused() {
 			m.portInput.Blur()
 		}
-		return m, tea.Batch(m.waitForLogLine(), m.waitForExit())
+		return m, tea.Batch(m.waitForLogLine(), m.waitForExit(), m.pollResourceUsageCmd())
 
 	case startErrorMsg:
 		// Handle start errors - don't mark as running
@@ -122,6 +124,42 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// This message is no longer used - cleanup happens in serverExitedMsg
 		return m, nil
 
+	case resourceUsageMsg:
+		// Update resource metrics
+		m.cpuPercent = msg.cpuPercent
+		m.memRSSBytes = msg.memRSSBytes
+		// Schedule next poll if server is still running
+		if m.serverRunning && !m.serverStopping {
+			// Capture serverCmd pointer to avoid stale closure
+			serverCmd := m.serverCmd
+			return m, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+				if serverCmd == nil || serverCmd.Process == nil {
+					return nil
+				}
+				pid := int32(serverCmd.Process.Pid)
+				proc, err := process.NewProcess(pid)
+				if err != nil {
+					return nil
+				}
+				cpuPercent, err := proc.CPUPercent()
+				if err != nil {
+					cpuPercent = 0
+				}
+				memInfo, err := proc.MemoryInfo()
+				if err != nil {
+					return resourceUsageMsg{
+						cpuPercent: cpuPercent,
+						memRSSBytes: 0,
+					}
+				}
+				return resourceUsageMsg{
+					cpuPercent: cpuPercent,
+					memRSSBytes: memInfo.RSS,
+				}
+			})
+		}
+		return m, nil
+
 	case serverExitedMsg:
 		// Cleanup state - this is where we actually confirm the server has stopped
 		m.serverRunning = false
@@ -132,6 +170,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serverCancel = nil
 		m.logChan = nil
 		m.exitChan = nil
+		m.cpuPercent = 0
+		m.memRSSBytes = 0
 		if m.logFile != nil {
 			_ = m.logFile.Close()
 			m.logFile = nil
